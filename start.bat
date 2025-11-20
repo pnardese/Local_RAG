@@ -1,0 +1,1 @@
+streamlit run cinemaDB_v8.py

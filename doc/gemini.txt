@@ -1,0 +1,383 @@
+I can certainly help you build that. Creating a semantic search engine for PDFs involves three main steps: extracting the text, chunking it into manageable pieces, and indexing it into ChromaDB using an embedding model.
+
+I have created a complete, self-contained Python script for you. It uses `pypdf` for reading documents, `sentence-transformers` for generating vector embeddings locally (no API keys required), and `chromadb` for storage and search.
+
+### Prerequisites
+
+You will need to install the following libraries:
+
+```bash
+pip install chromadb pypdf sentence-transformers
+```
+
+Here is the complete Python solution.
+
+http://googleusercontent.com/immersive_entry_chip/0
+
+### How this works
+
+1.  **`PDFVectorDB` Class**: This encapsulates the database logic. It initializes a persistent ChromaDB client (saved to the `./chroma_db` folder) and sets up the embedding model.
+2.  **Embedding Model**: I used `all-MiniLM-L6-v2`. This is a very popular, lightweight, and effective model that runs locally on your CPU. It converts text into a list of numbers (vectors) that represent meaning.
+3.  **`ingest_pdf`**:
+      * It reads the PDF page by page.
+      * **Chunking**: This is the most critical part. It splits the text into chunks of 1000 characters with a 200-character overlap. This ensures that if a sentence is cut off at the end of one chunk, it appears at the start of the next, preserving context.
+      * It saves the **Metadata** (Page number, filename) alongside the text so you know exactly where the answer came from.
+4.  **`search`**: It takes your text query, converts it into a vector using the same model, and asks ChromaDB for the "nearest neighbors"—the chunks of text that are mathematically closest in meaning to your query.
+
+### Usage
+
+1.  Run the script. It will generate a dummy PDF named `sample_ai_report.pdf` automatically for testing purposes.
+2.  It will ingest that PDF and then run two semantic searches.
+3.  To use your own PDFs, simply put them in a folder and modify the `__main__` block to loop through your directory and call `db.ingest_pdf("path/to/your.pdf")`.
+
+
+code:
+
+
+import os
+import chromadb
+from chromadb.utils import embedding_functions
+from pypdf import PdfReader
+import uuid
+
+class PDFVectorDB:
+    def __init__(self, persist_directory="./chroma_db"):
+        """
+        Initialize the Vector Database.
+        
+        Args:
+            persist_directory (str): Path to save the database on disk.
+        """
+        # Initialize ChromaDB client with persistence
+        self.client = chromadb.PersistentClient(path=persist_directory)
+        
+        # Use a high-quality, free, local embedding model (SentenceTransformers)
+        # This downloads the model once and runs locally.
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+        
+        # Create or get the collection
+        self.collection = self.client.get_or_create_collection(
+            name="pdf_knowledge_base",
+            embedding_function=self.embedding_fn
+        )
+
+    def _split_text(self, text, chunk_size=1000, overlap=200):
+        """
+        Splits text into overlapping chunks.
+        Critical for semantic search to preserve context.
+        """
+        chunks = []
+        start = 0
+        text_len = len(text)
+
+        while start < text_len:
+            end = start + chunk_size
+            chunk = text[start:end]
+            chunks.append(chunk)
+            # Move forward by chunk_size minus overlap
+            start += chunk_size - overlap
+        
+        return chunks
+
+    def ingest_pdf(self, file_path):
+        """
+        Reads a PDF, chunks the text, and adds it to the vector database.
+        """
+        if not os.path.exists(file_path):
+            print(f"Error: File {file_path} not found.")
+            return
+
+        print(f"Processing: {file_path}...")
+        
+        try:
+            reader = PdfReader(file_path)
+            filename = os.path.basename(file_path)
+            
+            documents = []
+            metadatas = []
+            ids = []
+
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if not text:
+                    continue
+                
+                # Split page text into semantic chunks
+                chunks = self._split_text(text)
+                
+                for chunk_index, chunk in enumerate(chunks):
+                    documents.append(chunk)
+                    
+                    # Metadata helps us find exactly where the info came from later
+                    metadatas.append({
+                        "source": filename,
+                        "page": i + 1,
+                        "chunk_index": chunk_index
+                    })
+                    
+                    # Create a unique ID for this chunk
+                    ids.append(f"{filename}_p{i+1}_{chunk_index}")
+
+            # Add to ChromaDB
+            if documents:
+                self.collection.add(
+                    documents=documents,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+                print(f"Successfully added {len(documents)} chunks from {filename}.")
+            else:
+                print(f"No text extracted from {filename}.")
+
+        except Exception as e:
+            print(f"Failed to process {file_path}: {str(e)}")
+
+    def search(self, query, n_results=3):
+        """
+        Performs a semantic search on the database.
+        """
+        print(f"\n--- Searching for: '{query}' ---")
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+
+        # Check if we have results
+        if not results['documents'][0]:
+            print("No results found.")
+            return
+
+        for i in range(len(results['documents'][0])):
+            doc = results['documents'][0][i]
+            meta = results['metadatas'][0][i]
+            score = results['distances'][0][i] # Distance score (lower is usually better in Chroma default)
+            
+            print(f"\nResult {i+1} (Source: {meta['source']}, Page: {meta['page']}):")
+            print(f"Text snippet: ...{doc}...")
+            print("-" * 50)
+
+# --- Usage Example ---
+if __name__ == "__main__":
+    # 1. Initialize the DB
+    db = PDFVectorDB()
+
+    # 2. Create a dummy PDF for demonstration purposes
+    # In a real scenario, you would skip this and just point to your existing PDFs.
+    from reportlab.pdfgen import canvas
+    dummy_pdf_name = "sample_ai_report.pdf"
+    
+    if not os.path.exists(dummy_pdf_name):
+        c = canvas.Canvas(dummy_pdf_name)
+        c.drawString(100, 800, "Artificial Intelligence Overview")
+        c.drawString(100, 780, "Deep learning is a subset of machine learning.")
+        c.drawString(100, 760, "It uses neural networks with three or more layers.")
+        c.drawString(100, 740, "ChromaDB is an open-source vector database.")
+        c.save()
+        print(f"Created dummy file: {dummy_pdf_name}")
+
+    # 3. Ingest the PDF
+    db.ingest_pdf(dummy_pdf_name)
+    
+    # NOTE: You can ingest multiple files like this:
+    # for file in os.listdir('./my_pdfs'):
+    #     if file.endswith('.pdf'):
+    #         db.ingest_pdf(os.path.join('./my_pdfs', file))
+
+    # 4. Perform a Search
+    # Notice we search for 'neural nets' even though the text says 'neural networks'
+    # This demonstrates semantic understanding.
+    db.search("How do neural nets work?")
+    db.search("What is ChromaDB?")
+	
+	
+	
+Add epub:	
+Yes, you can easily add EPUB support. The structure is very similar to PDF processing, but we need a different library to read the ebook format and strip the HTML tags usually found inside them.
+
+I have updated the script to support both formats.
+
+### Prerequisites
+
+You will need to install two additional libraries:
+
+```bash
+pip install ebooklib beautifulsoup4
+```
+
+### Key Changes
+
+1.  **Renamed Class:** Changed `PDFVectorDB` to `DocumentVectorDB` to reflect that it handles multiple formats.
+2.  **New `ingest_epub` method:** Uses `ebooklib` to read chapters and `BeautifulSoup` to extract clean text from the HTML structure.
+3.  **Refactoring:** Created a helper method `_process_and_index` to handle the chunking and database insertion, so we don't duplicate code for PDF and EPUB.
+
+Here is the updated file:
+
+http://googleusercontent.com/immersive_entry_chip/0
+
+
+code: 
+import os
+import chromadb
+from chromadb.utils import embedding_functions
+from pypdf import PdfReader
+# New imports for EPUB support
+import ebooklib
+from ebooklib import epub
+from bs4 import BeautifulSoup
+import warnings
+
+# Suppress ebooklib warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='ebooklib')
+
+class DocumentVectorDB:
+    def __init__(self, persist_directory="./chroma_db"):
+        """
+        Initialize the Vector Database.
+        Args:
+            persist_directory (str): Path to save the database on disk.
+        """
+        self.client = chromadb.PersistentClient(path=persist_directory)
+        
+        # Use a high-quality, free, local embedding model
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+        
+        self.collection = self.client.get_or_create_collection(
+            name="knowledge_base", # Renamed for generality
+            embedding_function=self.embedding_fn
+        )
+
+    def _split_text(self, text, chunk_size=1000, overlap=200):
+        """Splits text into overlapping chunks."""
+        chunks = []
+        start = 0
+        text_len = len(text)
+
+        while start < text_len:
+            end = start + chunk_size
+            chunk = text[start:end]
+            chunks.append(chunk)
+            start += chunk_size - overlap
+        
+        return chunks
+
+    def _process_and_index(self, text, filename, location_id):
+        """
+        Helper function to chunk text and add it to the DB.
+        location_id: Can be a page number (PDF) or chapter name (EPUB).
+        """
+        if not text or not text.strip():
+            return 0
+
+        chunks = self._split_text(text)
+        documents = []
+        metadatas = []
+        ids = []
+
+        for chunk_index, chunk in enumerate(chunks):
+            documents.append(chunk)
+            metadatas.append({
+                "source": filename,
+                "location": str(location_id), # Generic 'location' instead of 'page'
+                "chunk_index": chunk_index
+            })
+            # Unique ID: filename + location + chunk_index
+            ids.append(f"{filename}_{location_id}_{chunk_index}")
+
+        if documents:
+            self.collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids
+            )
+            return len(documents)
+        return 0
+
+    def ingest_pdf(self, file_path):
+        """Ingests a PDF file."""
+        if not os.path.exists(file_path):
+            print(f"Error: File {file_path} not found.")
+            return
+
+        print(f"Processing PDF: {file_path}...")
+        try:
+            reader = PdfReader(file_path)
+            filename = os.path.basename(file_path)
+            total_chunks = 0
+
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                # Use the helper to index this page
+                total_chunks += self._process_and_index(text, filename, f"Page {i+1}")
+
+            print(f"Finished {filename}: Added {total_chunks} chunks.")
+
+        except Exception as e:
+            print(f"Failed to process PDF {file_path}: {str(e)}")
+
+    def ingest_epub(self, file_path):
+        """Ingests an EPUB file."""
+        if not os.path.exists(file_path):
+            print(f"Error: File {file_path} not found.")
+            return
+
+        print(f"Processing EPUB: {file_path}...")
+        try:
+            book = epub.read_epub(file_path)
+            filename = os.path.basename(file_path)
+            total_chunks = 0
+
+            # Iterate through items (Chapters, intro, etc.)
+            for item in book.get_items():
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    # Get HTML content and strip tags using BeautifulSoup
+                    soup = BeautifulSoup(item.get_body_content(), 'html.parser')
+                    text = soup.get_text()
+                    
+                    # Use the item name (often chapter ID) as location
+                    chapter_name = item.get_name()
+                    
+                    total_chunks += self._process_and_index(text, filename, chapter_name)
+
+            print(f"Finished {filename}: Added {total_chunks} chunks.")
+
+        except Exception as e:
+            print(f"Failed to process EPUB {file_path}: {str(e)}")
+
+    def search(self, query, n_results=3):
+        """Performs a semantic search."""
+        print(f"\n--- Searching for: '{query}' ---")
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+
+        if not results['documents'] or not results['documents'][0]:
+            print("No results found.")
+            return
+
+        for i in range(len(results['documents'][0])):
+            doc = results['documents'][0][i]
+            meta = results['metadatas'][0][i]
+            
+            print(f"\nResult {i+1} (Source: {meta['source']}, Location: {meta['location']}):")
+            print(f"Text snippet: ...{doc}...")
+            print("-" * 50)
+
+# --- Usage Example ---
+if __name__ == "__main__":
+    # 1. Initialize the DB
+    db = DocumentVectorDB()
+
+    # 2. Ingest existing PDF (if it exists)
+    if os.path.exists("sample_ai_report.pdf"):
+        db.ingest_pdf("sample_ai_report.pdf")
+
+    # 3. Example: Ingest an EPUB (Uncomment and change path to test)
+    # db.ingest_epub("my_favorite_book.epub")
+
+    # 4. Search
+    # db.search("What is the main character's motivation?")
